@@ -285,7 +285,7 @@ export async function secureFetch(
     throw new Error('Too many redirects')
 }
 
-type ResolvedTarget = {
+export type ResolvedTarget = {
     hostname: string
     ip: string
     family: 4 | 6
@@ -332,12 +332,19 @@ async function resolveAndValidate(url: string): Promise<ResolvedTarget> {
     }
 }
 
-function createPinnedAgent(target: ResolvedTarget, options?: { ca?: string | string[] | Buffer }): http.Agent | https.Agent {
+export function createPinnedAgent(target: ResolvedTarget, options?: { ca?: string | string[] | Buffer }): http.Agent | https.Agent {
     const Agent = target.protocol === 'https' ? https.Agent : http.Agent
 
     return new Agent({
-        lookup: (_host, _opts, cb) => {
-            cb(null, target.ip, target.family)
+        // With `all: true` (used by Node's autoSelectFamily, on by default since Node 20)
+        // the callback must receive an array of addresses; a bare string fails with
+        // ERR_INVALID_IP_ADDRESS "Invalid IP address: undefined".
+        lookup: (_host, opts, cb) => {
+            if (opts && opts.all) {
+                cb(null, [{ address: target.ip, family: target.family }])
+            } else {
+                cb(null, target.ip, target.family)
+            }
         },
         ...options
     })

@@ -1,5 +1,7 @@
 import { describe, expect, it } from '@jest/globals'
-import { isDeniedIP } from './httpSecurity'
+import * as http from 'http'
+import { AddressInfo } from 'net'
+import { createPinnedAgent, isDeniedIP } from './httpSecurity'
 
 // Test deny list covering common SSRF targets
 const TEST_DENY_LIST = [
@@ -393,5 +395,43 @@ describe('isDeniedIP - SSRF Protection', () => {
             expect(() => isDeniedIP('1.1.1.1', multiMalformedList)).not.toThrow()
             expect(() => isDeniedIP('10.0.0.1', multiMalformedList)).not.toThrow()
         })
+    })
+})
+
+describe('createPinnedAgent - DNS pinning', () => {
+    const target = { hostname: 'pinned.example', ip: '127.0.0.1', family: 4 as const, protocol: 'http' as const }
+
+    function callLookup(opts: Record<string, any>): Promise<any[]> {
+        const agent: any = createPinnedAgent(target)
+        return new Promise((resolve) => agent.options.lookup('pinned.example', opts, (...args: any[]) => resolve(args)))
+    }
+
+    it('returns the pinned address as a string for a single lookup', async () => {
+        expect(await callLookup({})).toEqual([null, '127.0.0.1', 4])
+    })
+
+    it('returns an address array when all addresses are requested', async () => {
+        expect(await callLookup({ all: true })).toEqual([null, [{ address: '127.0.0.1', family: 4 }]])
+    })
+
+    it('connects to the pinned address with autoSelectFamily enabled', async () => {
+        const server = http.createServer((_req, res) => res.end('ok'))
+        await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+        const { port } = server.address() as AddressInfo
+        try {
+            const status = await new Promise<number | undefined>((resolve, reject) => {
+                const req = http.get(
+                    { host: 'pinned.example', port, path: '/', agent: createPinnedAgent(target), autoSelectFamily: true } as any,
+                    (res) => {
+                        res.resume()
+                        resolve(res.statusCode)
+                    }
+                )
+                req.on('error', reject)
+            })
+            expect(status).toBe(200)
+        } finally {
+            await new Promise((resolve) => server.close(resolve))
+        }
     })
 })
